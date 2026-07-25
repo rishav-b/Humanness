@@ -1,0 +1,5 @@
+[theme]
+font="Inter:https://googleapis.com"
+base = "light"
+textColor = "rgb(95, 113, 133)"
+primaryColor = "rgb(22, 119, 200)"
