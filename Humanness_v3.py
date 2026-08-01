@@ -759,7 +759,7 @@ def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_
         | ~3
     )
 
-    writer.encrypt(
+    writer.encrypt( 
         user_password="", 
         owner_password="iwhfuwehfpejoie", 
         permissions_flag=int(permissions)

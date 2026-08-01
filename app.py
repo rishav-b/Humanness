@@ -6,7 +6,7 @@ import os
 import threading
 import logging
 import base64
-from scipy.stats import chi2_contingency
+import scipy.stats as stats
 from pypdf import PdfReader, PdfWriter
 from pypdf.constants import UserAccessPermissions
 from reportlab.lib import colors
@@ -28,6 +28,7 @@ from reportlab.platypus import (
 from pathlib import Path
 from reportlab.graphics.shapes import Drawing, String
 from reportlab.graphics.charts.piecharts import Pie
+from itertools import combinations
 
 APP_DIR = Path(__file__).resolve().parent
 IMAGES_DIR = APP_DIR / "images"
@@ -62,25 +63,6 @@ st.set_page_config(
 st.header("COMPASS Humanness Calculator")
 st.text("Human-derived does not automatically mean human-relevant. The COMPASS TRUST-NAM Calculator provides a transparent, interoperable framework for benchmarking **Humanness, Relevance, and NAM Fidelity using cohort-anchored human evidence. Complete one or all three modules, generate quantitative scores, and download a publication-ready TRUST-NAM Benchmarking Report for reporting, comparison, and translational assessment." \
 "TRUST-NAM is the benchmarking framework; COMPASS is the web platform that implements it. Complete individual modules or all three to generate an integrated TRUST-NAM report.")
-
-
-def cohort_numbers(expd):
-    """
-    Computes variation among the cohorts in their composition
-    """
-
-    train_data = np.array([[expd["# Positive Samples"].iloc[x], expd["# Negative Samples"].iloc[x]] for x in range(len(expd)) if expd["Train/Test"].iloc[x] == "Train"])
-    test_data = np.array([[expd["# Positive Samples"].iloc[x], expd["# Negative Samples"].iloc[x]] for x in range(len(expd)) if expd["Train/Test"].iloc[x] == "Test"])
-    
-    v = []
-
-    for data in [train_data, test_data]:
-
-        chi2, p_val, dof, expected = chi2_contingency(data)
-        #Cramer's v
-        v.append(np.sqrt(chi2/(data.sum() * min(data.shape[0]-1, data.shape[1]-1))))
-    
-    #Not sure what to do with these yet
 
 
 st.markdown(
@@ -176,7 +158,37 @@ class Questionnaire:
         
         self.questions[st.session_state.cq[self.page]].render_question()
 
+def cohort_numbers(expd):
+    """
+    Computes variation among the cohorts in their composition
+    Not needed according to PG
+    """
 
+    train_data = np.array([expd["# Positive Samples"].iloc[x]/(expd["# Positive Samples"].iloc[x]+expd["# Negative Samples"].iloc[x]) for x in range(len(expd)) if expd["Train/Test"].iloc[x] == "Train"])
+    test_data = np.array([expd["# Positive Samples"].iloc[x]/(expd["# Positive Samples"].iloc[x]+expd["# Negative Samples"].iloc[x]) for x in range(len(expd)) if expd["Train/Test"].iloc[x] == "Test"])
+    train_var = np.var(train_data, ddof = 1)
+    test_var = np.var(test_data, ddof = 1)
+    dfn = len(train_data)-1
+    dfd = len(test_data)-1
+
+    if len(train_data) + len(test_data) > 2:
+        s_p = np.sqrt((dfn*train_var + dfd*test_var)/(dfn + dfd))
+
+        d = np.abs(np.mean(train_data) - np.mean(test_data))/s_p
+    else:
+        d = np.nan
+    
+    f_stat = train_var / test_var
+    p_val = 2 * min(stats.f.cdf(f_stat, dfn, dfd), stats.f.sf(f_stat, dfn, dfd))
+
+
+    print(d)
+
+def mde(expd):
+    ALPHA = 0.05 #significance
+    BETA = 0.2   #type ii error rate
+
+    mde_d = (stats.norm.ppf(1-ALPHA/2) + stats.norm.ppf(1-BETA)) * np.sqrt(1/)
 
 def score_expd(expd):
     SCORE = 0
@@ -237,40 +249,60 @@ def score_aucs(inputs):
     train_ses = hanley_mcneil(train_aucs, expd.loc[expd["Train/Test"] == "Train", "# Positive Samples"].values, expd.loc[expd["Train/Test"] == "Train", "# Negative Samples"].values)
     test_ses = hanley_mcneil(test_aucs, expd.loc[expd["Train/Test"] == "Test", "# Positive Samples"].values, expd.loc[expd["Train/Test"] == "Test", "# Negative Samples"].values)
 
-    train_weights = 1.0 / (train_ses**2)
-    train_wauc = np.sum(train_weights * train_aucs) / np.sum(train_weights)
+    feff_train_auc = np.sum(1/(train_ses)**2 * train_aucs) / np.sum(1/(train_ses)**2)
+    feff_test_auc = np.sum(1/(test_ses)**2 * test_aucs) / np.sum(1/(test_ses)**2)
 
-    test_weights = 1.0 / (test_ses**2)
-    feff_test_auc = np.sum(test_weights * test_aucs) / np.sum(test_weights)
+    train_chi_sq = np.sum(1/(train_ses)**2 * (train_aucs - feff_train_auc)**2)
+    test_chi_sq = np.sum(1/(test_ses)**2 * (test_aucs - feff_test_auc)**2)
+
+    train_p = 1 - stats.chi2.cdf(train_chi_sq, df = len(train_aucs)-1)
+    test_p = 1 - stats.chi2.cdf(test_chi_sq, df = len(test_aucs)-1)
+
+    def pooled_auc_and_var(aucs, ses, chi_sq, p_val, alpha=0.05):
+        weights = 1.0 / (ses**2)
+        if p_val < alpha:
+            k = len(aucs)
+            c = np.sum(weights) - np.sum(weights**2) / np.sum(weights)
+            tau_sq = max(0, (chi_sq - k + 1) / c)
+            weights = 1.0 / (ses**2 + tau_sq)
+        pooled = np.sum(weights * aucs) / np.sum(weights)
+        var = 1.0 / np.sum(weights)
+        return pooled, var
     
-    train_chi_sq = np.sum(train_weights * (train_aucs - train_wauc)**2)
-    test_chi_sq = np.sum(test_weights * (test_aucs - feff_test_auc)**2)
+    train_wauc, train_wauc_var = pooled_auc_and_var(train_aucs, train_ses, train_chi_sq, train_p)
+    test_wauc, test_wauc_var = pooled_auc_and_var(test_aucs, test_ses, test_chi_sq, test_p)
 
-    test_q = np.sum(test_weights*(test_aucs - feff_test_auc)**2)
-    test_c = np.sum(test_weights) - np.sum(test_weights**2) / np.sum(test_weights)
+    se_diff = np.sqrt(train_wauc_var + test_wauc_var)
 
-    test_tau_sq = max(0, (test_q-len(test_aucs)+1)/test_c)
-
-    test_random_weights = 1/(test_ses**2 + test_tau_sq)
-
-    reff_test_auc = np.sum(test_random_weights * test_aucs) / np.sum(test_random_weights)
-
-    train_wauc_var = 1/np.sum(train_weights)
-    reff_test_var = 1/np.sum(test_random_weights)
-
-    se_diff = np.sqrt(train_wauc_var + reff_test_var)
-
-    perf_drop = max(0, train_wauc-reff_test_auc)
+    perf_drop = max(0, train_wauc-test_wauc)
     perf_drop_z = perf_drop/se_diff
 
+    train_labels = expd.loc[expd["Train/Test"] == "Train", "Cohort #"].values
 
+    def pairwise_comparisons(aucs, ses, labels):
+        results = []
+        for (i, j) in combinations(range(len(aucs)), 2):
+            diff = aucs[i] - aucs[j]
+            se_diff = np.sqrt(ses[i]**2 + ses[j]**2)
+            z = diff / se_diff
+            p = 2 * (1 - stats.norm.cdf(abs(z)))
+            p_adj = min(1.0, p * (len(aucs) * (len(aucs) - 1) / 2))
+            results.append((labels[i], labels[j], diff, z, p_adj))
+        return results
+    
+    train_results = pairwise_comparisons(train_aucs, train_ses, train_labels)
+    test_results = pairwise_comparisons(test_aucs, test_ses, train_labels)
 
     # Parameters to consider for final score:
 
     # perf_drop : Drop in performance between train and test
     # perf_drop_z : Significance of the drop
-    # tau_sq : Variance between cohorts
+    # tau_sq : Variance between cohorts within either train or test
+    # train_results: Pairwise comparisons between train cohorts. p-values are generated by Hanley-McNeil and are Bonferroni corrected for multiple comparisons.
+    # test_results: Pairwise comparisons between train cohorts. p-values are generated by Hanley-McNeil and are Bonferroni corrected for multiple comparisons.
 
+
+    #Temporary return statement for testing we need to figure out how to weight all these different parameters
     return perf_drop
 
 def score(inputs):
@@ -325,7 +357,7 @@ def get_relevance_interpretation(score):
         return "Limited translational relevance."
 
 def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_id):
-    print(st.session_state.responses)
+    cohort_numbers(expd)
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -527,10 +559,6 @@ def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_
 
     def draw_front(canvas, doc):
         canvas.saveState()
-        
-        image_path = IMAGES_DIR / "inetmed_letterhead.png"
-
-        page_width, page_height = doc.pagesize
 
         canvas.drawImage(IMAGES_DIR / "trustnam_header.png", 0, doc.pagesize[1] - 100, width=500, height=100, mask='auto')
 
