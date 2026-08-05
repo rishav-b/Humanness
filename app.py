@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import re
+import xml.etree.ElementTree as ET
 import os
 import threading
 import logging
@@ -61,8 +63,13 @@ st.set_page_config(
 )
 
 st.header("COMPASS Humanness Calculator")
-st.text("Human-derived does not automatically mean human-relevant. The COMPASS TRUST-NAM Calculator provides a transparent, interoperable framework for benchmarking **Humanness, Relevance, and NAM Fidelity using cohort-anchored human evidence. Complete one or all three modules, generate quantitative scores, and download a publication-ready TRUST-NAM Benchmarking Report for reporting, comparison, and translational assessment." \
-"TRUST-NAM is the benchmarking framework; COMPASS is the web platform that implements it. Complete individual modules or all three to generate an integrated TRUST-NAM report.")
+st.markdown(
+    """
+    Human-derived does not automatically mean human-relevant. The **COMPASS TRUST-NAM Calculator** provides a transparent, interoperable framework for benchmarking **Humanness, Relevance, and NAM Fidelity** using cohort-anchored human evidence. **Complete one or all three modules**, generate quantitative scores, and download a publication-ready TRUST-NAM Benchmarking Report for reporting, comparison, and translational assessment.
+    
+    *TRUST-NAM is the benchmarking framework; COMPASS is the web platform that implements it. Complete individual modules or all three to generate an integrated TRUST-NAM report*.
+    """
+)
 
 
 st.markdown(
@@ -97,11 +104,13 @@ st.markdown(
 
 
 class Question:
-    def __init__(self, question_id, input_renderers, scorer):
+    def __init__(self, question_id, question_descs, input_renderers, scorer, definitions = []):
         self.question_id = question_id
+        self.question_descs = question_descs
         self.inputs = []
         self.input_renderers = input_renderers
         self.scorer = scorer
+        self.definitions = definitions
         self.page = 0
         self.num_questions = 0
 
@@ -109,7 +118,6 @@ class Question:
         return self.scorer(self.inputs)
     
     def render_question(self):
-        
         st.markdown(
             f"""
             <style>
@@ -134,18 +142,83 @@ class Question:
             )
 
         with st.container(key = f"slide_box_{self.page}_{st.session_state.cq[self.page]}", border=True):
-            self.inputs = [r() for r in self.input_renderers]
+            st.markdown(f"""<h3>{self.question_id}</h3>""", unsafe_allow_html=True)
+            for i, q_lambda in enumerate(self.input_renderers):
+                written_question = self.question_descs[i]
+                for d in self.definitions:
+                    if " "+d.text in self.question_descs[i] and d.definition_type == "label":
+                        written_question = written_question.replace(" "+d.text, " "+d.render_definition())
+                        
+                    elif "-"+d.text in self.question_descs[i] and d.definition_type == "label":
+                        written_question = written_question.replace("-"+d.text, "-"+d.render_definition())
+                        
+                st.write(written_question, unsafe_allow_html=True)
+                
+                self.inputs.append(self.input_renderers[i](label_visibility="collapsed", key=f"{self.page}_{self.question_id}_{i}"))
 
         st.session_state.animate_slide = False
     
     def advance(self):
         st.session_state.animate_slide = True
-        st.session_state.cq[self.page] = min(st.session_state.cq[self.page] + 1, self.num_questions-1)
+        st.session_state.cq[self.page] = min(st.session_state.cq[self.page] + 1, self.num_questions)
         st.session_state.responses[self.page][self.question_id] = (self.inputs, self.get_score())
 
     def restart(self):
         st.session_state.cq[self.page] = 0
         st.session_state.responses[self.page] = {}
+
+class Definition:
+    def __init__(self, text, definition, definition_type, in_pdf):
+        self.text = text
+        self.definition = definition
+        self.definition_type = definition_type
+        self.in_pdf = in_pdf
+
+    def render_definition(self):
+        st.markdown("""
+            <style>
+            .tooltip, .definition {
+            position: relative;
+            display: inline-block;
+            border-bottom: 1px dotted #182B49; 
+            color: #1677c8;
+            cursor: pointer;
+            }
+
+            .tooltip .tooltiptext, .definition .definitiontext {
+            visibility: hidden;
+            width: 400px;
+            font-size: 0.6em;
+            font-weight: 400;
+            background-color: #333;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 8px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%; 
+            left: 50%;
+            margin-left: -100px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            }
+                    
+            .definition .definitiontext {
+                font-size: 12px;
+            }
+
+            .tooltip:hover .tooltiptext, .definition:hover .definitiontext {
+            visibility: visible;
+            opacity: 1;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+        
+        if self.definition_type == "title":
+            return f"""<span class="tooltip">{self.text}<span class="tooltiptext">{self.definition}</span></span>"""
+        else:
+            return f"""<span class="definition">{self.text}<span class="definitiontext">{self.definition}</span></span>"""
 
 class Questionnaire:
     def __init__(self, questions: list[Question], page):
@@ -155,8 +228,162 @@ class Questionnaire:
         for q in self.questions:
             q.num_questions = len(self.questions)
             q.page = self.page
+
+        if st.session_state.cq[self.page] == len(self.questions):
+            file_names = ["human.svg", "relevance.svg", "nam.svg"]
+
+            svg_markup, error = process_and_fill_svg(
+                IMAGES_DIR / file_names[self.page],
+                sum([v[1] for v in st.session_state.responses[self.page].values()]), 
+                "#1677c8"      
+            )
+
+            if not error and svg_markup:
+                score, image = st.columns([3,3])
+                with score:
+                    st.markdown(
+                        f"""
+                        <div style="display: flex; flex-direction: column; align-items: flex-start; width: 100%; margin-top: 20px;">
+                            <div style="display: flex; align-items: center; gap: 20px; width: 100%; margin-bottom: 10px;">
+                                <div style="width: 100px;"><h3 style="margin: 0; text-align: left;">Score</h3></div>
+                                <div style="font-size: 24px; font-weight: bold; color: #1677c8;">
+                                    {sum([v[1] for v in st.session_state.responses[self.page].values()])}%
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 20px; width: 100%;">
+                                <div style="width: 100px;"><h3 style="margin: 0; text-align: left;">Grade</h3></div>
+                                <div style="font-size: 16px; font-weight: bold; color: #1677c8;">
+                                    {get_interpretation(sum([v[1] for v in st.session_state.responses[self.page].values()]), self.page)}
+                                </div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with image:
+                    st.image(svg_markup, width='content')
+        else:
+            self.questions[st.session_state.cq[self.page]].render_question()
+
+def get_interpretation(score, page):
+    """
+    Gives a simple interpretation based on current humanness score.
+    This can be refined later as the calculator matures.
+    """
+
+    if page == 0:
+
+        if score >= 80:
+            return "High humanness, strongly anchored to human biology."
+        elif score >= 60:
+            return "Moderate-high humanness"
+        elif score >= 40:
+            return "Partial humanness, important gaps remain"
+        elif score >= 20:
+            return "Low, limited validation"
+        else:
+            return "Low, limited human biological relevance."
         
-        self.questions[st.session_state.cq[self.page]].render_question()
+    elif page == 1:
+        if score >= 80:
+            return "Strongly clinically relevant."
+        elif score >= 60:
+            return "Moderately relevant."
+        elif score >= 40:
+            return "Weakly relevant."
+        else:
+            return "Limited translational relevance."
+        
+    else: 
+        return "N/A"
+
+def process_and_fill_svg(svg_filepath, percentage, color_hex):
+    """
+    Modifies an SVG so that it fills as a single cohesive unit from the bottom up,
+    by using global canvas coordinates (userSpaceOnUse) for the gradient.
+    """
+    try:
+        ET.register_namespace('', "http://www.w3.org/2000/svg")
+        
+        tree = ET.parse(svg_filepath)
+        root = tree.getroot()
+        
+        color_hex = color_hex.lstrip('#')
+        
+        # 1. Extract dimensions to define the global height scale
+        viewbox = root.get('viewBox')
+        if viewbox:
+            _, _, vb_w, vb_h = viewbox.split()
+            width, height = float(vb_w), float(vb_h)
+        else:
+            width = float(root.get('width', '500').replace('px', ''))
+            height = float(root.get('height', '500').replace('px', ''))
+
+        # 2. Calculate exact absolute Y position where the color changes
+        # SVG 0 is the very top, 'height' is the very bottom.
+        split_y = height - (height * (percentage / 100))
+        
+        grad_id = "global_svg_grad"
+        
+        # 3. Use gradientUnits="userSpaceOnUse" and absolute coordinates (y1 -> y2)
+        # This treats the whole SVG canvas as a single shared bucket.
+        defs_markup = f"""
+        <defs xmlns="http://www.w3.org/2000/svg">
+            <linearGradient id="{grad_id}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="{height}">
+                <stop offset="0%" stop-color="#CCCCCC" stop-opacity="0.3" />
+                <stop id="split-top" y-pos="{split_y}" offset="{split_y}" stop-color="#CCCCCC" stop-opacity="0.3" />
+                <stop id="split-bottom" y-pos="{split_y}" offset="{split_y}" stop-color="#{color_hex}" stop-opacity="1" />
+                <stop offset="100%" stop-color="#{color_hex}" stop-opacity="1" />
+            </linearGradient>
+        </defs>
+        """
+        
+        # ElementTree requires percentages or fractional bounds for string offsets in basic parsers,
+        # so we will inject the exact percentage representation of the global split point:
+        split_percent = 100 - percentage
+        
+        defs_markup = f"""
+        <defs xmlns="http://www.w3.org/2000/svg">
+            <linearGradient id="{grad_id}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="{height}">
+                <stop offset="0%" stop-color="#CCCCCC" stop-opacity="0.3" />
+                <stop offset="{split_percent}%" stop-color="#CCCCCC" stop-opacity="0.3" />
+                <stop offset="{split_percent}%" stop-color="#{color_hex}" stop-opacity="1" />
+                <stop offset="100%" stop-color="#{color_hex}" stop-opacity="1" />
+            </linearGradient>
+        </defs>
+        """
+        defs_element = ET.fromstring(defs_markup)
+        
+        # 4. Clean individual shape styles so they fall back to the parent container's fill rule
+        def strip_fills(element):
+            if 'fill' in element.attrib:
+                del element.attrib['fill']
+            if 'style' in element.attrib:
+                style = element.attrib['style']
+                style = re.sub(r'fill\s*:\s*[^;]+;?', '', style)
+                element.attrib['style'] = style
+            for child in element:
+                strip_fills(child)
+
+        root_children = list(root)
+        global_group = ET.Element('g', {
+            'id': 'cohesive_fill_group',
+            'fill': f"url(#{grad_id})" 
+        })
+        
+        for child in root_children:
+            root.remove(child)
+            strip_fills(child)
+            global_group.append(child)
+            
+        root.append(defs_element)
+        root.append(global_group)
+        
+        svg_string = ET.tostring(root, encoding='utf-8').decode('utf-8')
+        return svg_string, None
+
+    except Exception as e:
+        return None, f"Error processing SVG: {str(e)}"
 
 def cohort_numbers(expd):
     """
@@ -178,46 +405,69 @@ def cohort_numbers(expd):
     else:
         d = np.nan
     
-    f_stat = train_var / test_var
-    p_val = 2 * min(stats.f.cdf(f_stat, dfn, dfd), stats.f.sf(f_stat, dfn, dfd))
+    j = 1 - 3/(4*(dfn+dfd)-1)
 
+    g = d * j
 
-    print(d)
+    #Hedge's g correction for Cohen's d
+    return g
 
-def mde(expd):
-    ALPHA = 0.05 #significance
-    BETA = 0.2   #type ii error rate
-
-    mde_d = (stats.norm.ppf(1-ALPHA/2) + stats.norm.ppf(1-BETA)) * np.sqrt(1/)
 
 def score_expd(expd):
-    SCORE = 0
+    q3 = 0
+    # Humanness Q3-4 
 
-    # Humanness Q4 
-    if len(expd) < 500:
-        SCORE += 5
-    elif len(expd) < 1000:
-        SCORE += 10
-    elif len(expd) < 5000:
-        SCORE += 15
-    elif len(expd) < 10000:
-        SCORE += 20
-    else: 
-        SCORE += 25
+    len_train = sum(expd["# Positive Samples"][expd["Train/Test"] == "Train"]) + sum(expd["# Negative Samples"][expd["Train/Test"] == "Train"])
+    len_test = sum(expd["# Positive Samples"][expd["Train/Test"] == "Test"]) + sum(expd["# Negative Samples"][expd["Train/Test"] == "Test"])
+    len_all = len_train + len_test
+    if (len_test) > 0:
+        if len_all < 500:
+            q3 += 5
+        elif len_all < 1000:
+            q3 += 10
+        elif len_all < 5000:
+            q3 += 15
+        elif len_all < 10000:
+            q3 += 20
+        else: 
+            q3 += 25
+    
+    
 
+    q1 = 0
+    if len_train > 5000:
+        q1 += 25
+    elif len_train > 1000:
+        q1 += 20
+    elif len_train > 500:
+        q1 += 15
+    elif len_train > 100:
+        q1 += 10
+    else:
+        q1 += 5
+
+    st.session_state.responses[0]["Total Sample Size (Across All Cohorts)"] = ([len_all], q3)
+    st.session_state.responses[0]["Total Sample Size (Across Training Cohorts)"] = ([len_train], q3)
+
+    rel_score = 0
     # Relevance Q1
     g1 = sum(expd["# Positive Samples"]) 
     g2 = sum(expd["# Negative Samples"])
-    p = g1/(g1 + g2)
 
-    if p == 0 or p == 1:
-        SCORE += 5
-    elif p < 0.5:
-        SCORE += 15
-    else:
-        SCORE += 25
+    if (g1+g2 > 0):
+        p = g1/(g1 + g2)
 
-    return SCORE
+        if p == 0 or p == 1:
+            rel_score += 5
+        elif p < 0.5:
+            rel_score += 15
+        else:
+            rel_score += 25
+
+    st.session_state.responses[1]["Relevance Experimental Design"] = ([], rel_score)
+
+
+
     
 def score_aucs(inputs):
     """
@@ -258,19 +508,18 @@ def score_aucs(inputs):
     train_p = 1 - stats.chi2.cdf(train_chi_sq, df = len(train_aucs)-1)
     test_p = 1 - stats.chi2.cdf(test_chi_sq, df = len(test_aucs)-1)
 
-    def pooled_auc_and_var(aucs, ses, chi_sq, p_val, alpha=0.05):
+    def pooled_auc_and_var(aucs, ses, chi_sq):
         weights = 1.0 / (ses**2)
-        if p_val < alpha:
-            k = len(aucs)
-            c = np.sum(weights) - np.sum(weights**2) / np.sum(weights)
-            tau_sq = max(0, (chi_sq - k + 1) / c)
-            weights = 1.0 / (ses**2 + tau_sq)
+        k = len(aucs)
+        c = np.sum(weights) - np.sum(weights**2) / np.sum(weights)
+        tau_sq = max(0, (chi_sq - k + 1) / c)
+        weights = 1.0 / (ses**2 + tau_sq)
         pooled = np.sum(weights * aucs) / np.sum(weights)
         var = 1.0 / np.sum(weights)
         return pooled, var
     
-    train_wauc, train_wauc_var = pooled_auc_and_var(train_aucs, train_ses, train_chi_sq, train_p)
-    test_wauc, test_wauc_var = pooled_auc_and_var(test_aucs, test_ses, test_chi_sq, test_p)
+    train_wauc, train_wauc_var = pooled_auc_and_var(train_aucs, train_ses, train_chi_sq)
+    test_wauc, test_wauc_var = pooled_auc_and_var(test_aucs, test_ses, test_chi_sq)
 
     se_diff = np.sqrt(train_wauc_var + test_wauc_var)
 
@@ -290,6 +539,17 @@ def score_aucs(inputs):
     #Temporary return statement for testing we need to figure out how to weight all these different parameters
     return perf_drop
 
+def score_reproducibility(inputs):
+    scores = [4, 1, 1, 2, 6, 10, 6]
+
+    repro_score = 0
+
+    for i in range(len(inputs)):
+        if inputs[i]:
+            repro_score += scores[i]
+    
+    return repro_score
+
 def score(inputs):
     SCORE = 0
     score_dict = {
@@ -302,7 +562,11 @@ def score(inputs):
         "3-5 cohorts": 15,
         "1-2 cohorts": 10,
         "Retrospective only": 5,
-        "No outcome-linked cohorts": 0
+        "No outcome-linked cohorts": 0,
+
+        "> 3 independent readout types": 20,
+        "1-3 independent readout types": 10,
+        "Not applicable": 0,
 
     }
 
@@ -793,26 +1057,40 @@ with expd:
 
             # cohort_numbers(st.session_state.expd)
             st.rerun()    
+    score_expd(st.session_state.expd)
 
 with hum:
     expd = st.session_state.expd
-    h_questions = Questionnaire([Question("human_anchored", [lambda: st.selectbox("Was the original ML model built from human tissues or body fluids (blood, BAL, etc.)?", options = ("Yes", "No"))], lambda x: 5 if x[0] == "Yes" else 0),
-                   Question("data_quality", [lambda: st.selectbox("What was the quality of the dataset(s) used to build the model?", options = ("High quality (Deep sequencing, > 50M reads/sample, validated platforms)", "Not high quality < 50M reads/sample or not validated"))], lambda x: 10 if "> 50M" in x[0] else 0),
-                   Question("cross_species_conservation", [lambda: st.selectbox("Is the entity conserved across species? (foundational biology but not a substitute for humanness)", options = ("Yes", "No"))], lambda x: 5 if x[0] == "Yes" else 0),
-                   Question("roc_auc", [lambda x=x: st.number_input(f"AUC of Cohort #{x+1} ({expd.iloc[x]["Train/Test"]} n = {int(expd.loc[expd["Cohort #"] == x+1]["# Positive Samples"].iloc[0])+int(expd.loc[expd["Cohort #"] == x+1]["# Negative Samples"].iloc[0])})", max_value= 1.0, key = str(x), format = "%.4f") for x in range(len(expd))], score_aucs)], 
+    h_questions = Questionnaire([Question("Human Anchored", ["Was the original ML model built from human tissues or body fluids (blood, BAL, etc.)?"], [lambda **kw: st.selectbox(label = "", options = ("Yes", "No"), **kw)], lambda x: 5 if x[0] == "Yes" else 0, definitions=[Definition("BAL", "Bronchoalveolar lavage (BAL): Fluid collected from the lower airways during bronchoscopy. BAL contains immune cells, proteins, microbes, and soluble biomarkers that directly reflect lung biology.", "label", True)]),
+                   Question("Data Quality", ["What was the quality of the dataset(s) used to build the model?"], [lambda **kw: st.selectbox(label = "", options = ("High quality (Deep sequencing, > 50M reads/sample, validated platforms)", "Not high quality < 50M reads/sample or not validated"), **kw)], lambda x: 10 if "> 50M" in x[0] else (5 if "< 50M" in x[0] else 0)),
+                   Question("Cross Species Conservation", ["Is the entity conserved across species? (foundational biology but not a substitute for humanness)"], [lambda **kw: st.selectbox(label = "", options = ("Yes", "No"), **kw)], lambda x: 10 if x[0] == "Yes" else 0, definitions = [Definition("species", "Species: A biological organism (e.g., human, mouse, rat, non-human primate) used to generate or validate findings. Human-derived evidence contributes to Humanness; cross-species conservation provides supportive, but not primary, evidence.", "label", True)]),
+                   Question("ROC AUC", [f"AUC of Cohort #{x+1} ({expd.iloc[x]["Train/Test"]} n = {int(expd.loc[expd["Cohort #"] == x+1]["# Positive Samples"].iloc[0])+int(expd.loc[expd["Cohort #"] == x+1]["# Negative Samples"].iloc[0])})" for x in range(len(expd))], [lambda x=x, **kw: st.number_input(f"AUC of Cohort #{x+1} ({expd.iloc[x]["Train/Test"]} n = {int(expd.loc[expd["Cohort #"] == x+1]["# Positive Samples"].iloc[0])+int(expd.loc[expd["Cohort #"] == x+1]["# Negative Samples"].iloc[0])})", max_value= 1.0, format = "%.4f") for x in range(len(expd))], score_aucs)], 
                    
                    0)
 
 with rel:
     expd = st.session_state.expd
-    r_questions = Questionnaire([Question("disease_severity", [lambda: st.selectbox("Was the model originally built or independently validated to classify disease severity, progression, therapeutic response, relapse, survival, or clinical outcomes?", options = ("Yes, prospectively validated", "Yes, retrospectively validated", "Exploratory association only", "No outcome association"))], score),
-                   Question("prospective_cohorts", [lambda: st.selectbox("Were datasets prospectively collected with future outcomes annotated after tissue diversion?", options = (">5 cohorts","3-5 cohorts","1-2 cohorts","Retrospective only","No outcome-linked cohorts"))], score),
-                   Question("gwas", [lambda: st.selectbox("Is there additional support from GWAS and/or other biological support?", options = ("Yes", "No"))], lambda x: 25 if x[0] == "Yes" else 0)],
+    r_questions = Questionnaire([Question("Disease Severity", ["Was the model originally built or independently validated to classify disease severity, progression, therapeutic response, relapse, survival, or clinical outcomes?"], [lambda **kw: st.selectbox(label = "", options = ("Yes, prospectively validated", "Yes, retrospectively validated", "Exploratory association only", "No outcome association"), **kw)], score, definitions=[Definition("disease severity", "Disease severity: The extent or stage of illness (e.g., mild, moderate, severe, progressive, remission, relapse). Models linked to disease severity are expected to better capture clinically meaningful biology.", "label", True), Definition("clinical outcomes", "Clinical outcomes: Patient-centered endpoints such as disease-free, transplant-free or overall survival, disease progression (complications, by symptoms or radiologic or other clinically accepted scores), relapse, treatment response, symptom improvement, hospitalization or mortality in hospital, or adverse events that determine clinical benefit typically in Phase 3 trials looking for efficacy.", "label", True)]),
+                   Question("Prospective Cohorts", ["Were datasets prospectively collected with future outcomes annotated after tissue diversion?"], [lambda **kw: st.selectbox(label = "", options = (">5 cohorts","3-5 cohorts","1-2 cohorts","Retrospective only","No outcome-linked cohorts"), **kw)], score, definitions = [Definition("tissue diversion", "Tissue diversion: The time at which a human specimen is collected from clinical care or surgery for research. Prospective outcome studies link future clinical events to samples obtained at the time of tissue diversion.", "label", True)]),
+                   Question("GWAS Support", ["Is there additional support from GWAS and/or other biological support?"], [lambda **kw: st.selectbox(label = "", options = ("Yes", "No"), **kw)], lambda x: 25 if x[0] == "Yes" else 0, definitions=[Definition("GWAS", "Genome-Wide Association Study (GWAS): A study that identifies genetic variants associated with human traits or disease. Within TRUST-NAM, GWAS is one example of human biological support, alongside rare variants, eQTLs, CRISPR, drug-target evidence, and other causal data.", "label", True)])],
                    
                    1)
-    
+
+with nam:
+    expd = st.session_state.expd
+    n_questions = Questionnaire([Question("Signature Capture (AUC)", ["What is the AUC ROC in healthy vs disease classification?"], [lambda **kw: st.number_input(label = "", min_value = 0.0, max_value = 1.0, format = "%.4f", **kw)], lambda x: 20 if x[0] >= 0.85 else (10 if x[0] >= 0.7 else 0)),
+                                 Question("Perturbation Alignment (multi-omic + phenotype)", ["Alignment of perturbation response between the NAM and human disease biology (multi-omic + phenotype)"], [lambda **kw: st.selectbox(label = "", options = ("> 3 independent readout types", "1-3 independent readout types", "Not applicable"), **kw)], score, definitions = [Definition("perturbation", "Perturbation: An intentional experimental intervention (drug, gene editing, cytokine, infection, environmental stimulus, etc.) used to test whether a NAM responds as predicted from human biology.", "label", True)]),
+                                 Question("Outcome Prediction (prospective human cohort)", ["What is the AUC of post-perturbation signature prediction of prospective human outcomes?"], [lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw)], lambda x: 20 if x[0] >= 0.85 else (10 if x[0] >= 0.7 else 0), definitions = [Definition("perturbation", "Perturbation: An intentional experimental intervention (drug, gene editing, cytokine, infection, environmental stimulus, etc.) used to test whether a NAM responds as predicted from human biology.", "label", True)]),
+                                 Question("Animal Model Corroboration", ["Signature capture of human disease biology in animal models (AUC)", "Predicts functional/phenotypic outcomes post-perturbation in prospective cohorts (AUC)", "Post-perturbation signature matches model signature (correlation)", "Post-perturbation signature predicts outcomes in human cohorts (AUC)"], [lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw), lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw), lambda **kw: st.number_input(label = "", min_value=-1.0, max_value=1.0, format="%.4f", **kw), lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw)], lambda x: 10 if (y := int(x[0] >=0.75) + int(x[1] >= 0.6) + int(x[2] >= 0.7) + int(x[3] >= 0.6)) == 4 else (5 if y == 3 else (5 if y == 2 else (0 if y == 1 else 0))), definitions = [Definition("perturbation", "Perturbation: An intentional experimental intervention (drug, gene editing, cytokine, infection, environmental stimulus, etc.) used to test whether a NAM responds as predicted from human biology.", "label", True)]),
+                                 Question("Reproducibility/Adoption Modifier", ["Simplicity - Minimal components; easy to implement; low technical complexity", "Scalability - High-throughput; cost-effective; readily accessible", "Least Perturbed Design - Physiologically relevant; minimal exogenous manipulation", "Defined Context of Use - Clear indications, limitations, and intended use", "Standardized SOPs - SOPs available, validated, and widely adopted", "Biological & Technical replicates - Adequate biological replicates (unique donors); technical replicates; statistically powered", "Fit-for-Purpose Benchmarking - Benchmarked against appropriate state-of-the-art standards"], [lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw)], score_reproducibility)
+                                 ],
+                                
+                                2)
+
 with pdf:
     user_id, submission_saved = get_user_id()
+
+    print(st.session_state.responses[2])
 
     pdf_bytes = generate_pdf_report(
         st.session_state.responses[0],
