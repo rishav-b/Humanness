@@ -447,7 +447,7 @@ def score_expd(expd):
         q1 += 5
 
     st.session_state.responses[0]["Total Sample Size (Across All Cohorts)"] = ([len_all], q3)
-    st.session_state.responses[0]["Total Sample Size (Across Training Cohorts)"] = ([len_train], q3)
+    st.session_state.responses[0]["Total Sample Size (Across Training Cohorts)"] = ([len_train], q1)
 
     rel_score = 0
     # Relevance Q1
