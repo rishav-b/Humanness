@@ -8,6 +8,7 @@ import os
 import threading
 import logging
 import base64
+import math
 import scipy.stats as stats
 from pypdf import PdfReader, PdfWriter
 from pypdf.constants import UserAccessPermissions
@@ -21,6 +22,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     Image,
     Paragraph,
+    Flowable,
     PageBreak,
     SimpleDocTemplate,
     Spacer,
@@ -28,21 +30,27 @@ from reportlab.platypus import (
     TableStyle,
 )
 from pathlib import Path
-from reportlab.graphics.shapes import Drawing, String
+from reportlab.graphics.shapes import Drawing, Circle, Line, String
+from reportlab.graphics.charts.spider import SpiderChart
 from reportlab.graphics.charts.piecharts import Pie
-from itertools import combinations
 
 APP_DIR = Path(__file__).resolve().parent
 IMAGES_DIR = APP_DIR / "images"
 FONTS_DIR = APP_DIR / "fonts"
 LOGGER = logging.getLogger(__name__)
 
+if "control_name" not in st.session_state:
+    st.session_state.control_name = "Control"
+
+if "test_name" not in st.session_state:
+    st.session_state.test_name = "Test"
+
 if "expd" not in st.session_state:
     st.session_state.expd = pd.DataFrame( 
             data = {
             "Cohort #": [],
-            "# Positive Samples": [],
-            "# Negative Samples": [],
+            f"# {st.session_state.test_name} Samples": [],
+            f"# {st.session_state.control_name} Samples": [],
             "Train/Test": [],
             },
         )
@@ -55,6 +63,8 @@ if "animate_slide" not in st.session_state:
 
 if "responses" not in st.session_state:
     st.session_state.responses = [{}, {}, {}]
+
+
 
 st.set_page_config(
     page_title="COMPASS Humanness Calculator",
@@ -391,8 +401,8 @@ def cohort_numbers(expd):
     Not needed according to PG
     """
 
-    train_data = np.array([expd["# Positive Samples"].iloc[x]/(expd["# Positive Samples"].iloc[x]+expd["# Negative Samples"].iloc[x]) for x in range(len(expd)) if expd["Train/Test"].iloc[x] == "Train"])
-    test_data = np.array([expd["# Positive Samples"].iloc[x]/(expd["# Positive Samples"].iloc[x]+expd["# Negative Samples"].iloc[x]) for x in range(len(expd)) if expd["Train/Test"].iloc[x] == "Test"])
+    train_data = np.array([expd[f"# {st.session_state.test_name} Samples"].iloc[x]/(expd[f"# {st.session_state.test_name} Samples"].iloc[x]+expd[f"# {st.session_state.control_name} Samples"].iloc[x]) for x in range(len(expd)) if expd["Train/Test"].iloc[x] == "Train"])
+    test_data = np.array([expd[f"# {st.session_state.test_name} Samples"].iloc[x]/(expd[f"# {st.session_state.test_name} Samples"].iloc[x]+expd[f"# {st.session_state.control_name} Samples"].iloc[x]) for x in range(len(expd)) if expd["Train/Test"].iloc[x] == "Test"])
     train_var = np.var(train_data, ddof = 1)
     test_var = np.var(test_data, ddof = 1)
     dfn = len(train_data)-1
@@ -417,8 +427,8 @@ def score_expd(expd):
     q3 = 0
     # Humanness Q3-4 
 
-    len_train = sum(expd["# Positive Samples"][expd["Train/Test"] == "Train"]) + sum(expd["# Negative Samples"][expd["Train/Test"] == "Train"])
-    len_test = sum(expd["# Positive Samples"][expd["Train/Test"] == "Test"]) + sum(expd["# Negative Samples"][expd["Train/Test"] == "Test"])
+    len_train = sum(expd[f"# {st.session_state.test_name} Samples"][expd["Train/Test"] == "Train"]) + sum(expd[f"# {st.session_state.control_name} Samples"][expd["Train/Test"] == "Train"])
+    len_test = sum(expd[f"# {st.session_state.test_name} Samples"][expd["Train/Test"] == "Test"]) + sum(expd[f"# {st.session_state.control_name} Samples"][expd["Train/Test"] == "Test"])
     len_all = len_train + len_test
     if (len_test) > 0:
         if len_all < 500:
@@ -446,13 +456,13 @@ def score_expd(expd):
     else:
         q1 += 5
 
-    st.session_state.responses[0]["Total Sample Size (Across All Cohorts)"] = ([len_all], q3)
-    st.session_state.responses[0]["Total Sample Size (Across Training Cohorts)"] = ([len_train], q1)
+    st.session_state.responses[0]["Total Sample Size"] = ([len_all], q3)
+    st.session_state.responses[0]["Train \nSample \nSize"] = ([len_train], q1)
 
     rel_score = 0
     # Relevance Q1
-    g1 = sum(expd["# Positive Samples"]) 
-    g2 = sum(expd["# Negative Samples"])
+    g1 = sum(expd[f"# {st.session_state.test_name} Samples"]) 
+    g2 = sum(expd[f"# {st.session_state.control_name} Samples"])
 
     if (g1+g2 > 0):
         p = g1/(g1 + g2)
@@ -496,8 +506,8 @@ def score_aucs(inputs):
     train_aucs = np.array([inputs[x] for x in range(len(inputs)) if expd.iloc[x]["Train/Test"] == "Train"])
     test_aucs = np.array([inputs[x] for x in range(len(inputs)) if expd.iloc[x]["Train/Test"] == "Test"])
 
-    train_ses = hanley_mcneil(train_aucs, expd.loc[expd["Train/Test"] == "Train", "# Positive Samples"].values, expd.loc[expd["Train/Test"] == "Train", "# Negative Samples"].values)
-    test_ses = hanley_mcneil(test_aucs, expd.loc[expd["Train/Test"] == "Test", "# Positive Samples"].values, expd.loc[expd["Train/Test"] == "Test", "# Negative Samples"].values)
+    train_ses = hanley_mcneil(train_aucs, expd.loc[expd["Train/Test"] == "Train", f"# {st.session_state.test_name} Samples"].values, expd.loc[expd["Train/Test"] == "Train", f"# {st.session_state.control_name} Samples"].values)
+    test_ses = hanley_mcneil(test_aucs, expd.loc[expd["Train/Test"] == "Test", f"# {st.session_state.test_name} Samples"].values, expd.loc[expd["Train/Test"] == "Test", f"# {st.session_state.control_name} Samples"].values)
 
     feff_train_auc = np.sum(1/(train_ses)**2 * train_aucs) / np.sum(1/(train_ses)**2)
     feff_test_auc = np.sum(1/(test_ses)**2 * test_aucs) / np.sum(1/(test_ses)**2)
@@ -507,6 +517,9 @@ def score_aucs(inputs):
 
     train_p = 1 - stats.chi2.cdf(train_chi_sq, df = len(train_aucs)-1)
     test_p = 1 - stats.chi2.cdf(test_chi_sq, df = len(test_aucs)-1)
+
+    # print(f"P value of variance within train aucs: {train_p}")
+    # print(f"P value of variance within test aucs: {test_p}")
 
     def pooled_auc_and_var(aucs, ses, chi_sq):
         weights = 1.0 / (ses**2)
@@ -525,6 +538,8 @@ def score_aucs(inputs):
 
     perf_drop = max(0, train_wauc-test_wauc)
     perf_drop_z = perf_drop/se_diff
+
+    # print(f"P value of drop between train and test aucs: {perf_drop_z}")
 
 
     # Parameters to consider for final score:
@@ -606,7 +621,7 @@ def get_relevance_interpretation(score):
         return "Limited translational relevance."
 
 def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_id):
-    cohort_numbers(expd)
+
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -629,8 +644,8 @@ def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_
         with PILImage.open(image_path) as pil_img:
             source_width, source_height = pil_img.size
 
-        max_width = 95
-        max_height = 100
+        max_width = 115
+        max_height = 150
         scale = min(
             max_width / source_width,
             max_height / source_height,
@@ -641,13 +656,60 @@ def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_
             height=source_height * scale,
             mask="auto",
         )
-        pie = render_pie(score, color, resp)
+
+        class RotatedParagraph(Flowable):
+            def __init__(self, paragraph, angle=90, max_text_width=150):
+                super().__init__()
+                self.paragraph = paragraph
+                self.angle = angle
+                # Cap the max width so ReportLab's 72000 test value doesn't explode the cell
+                self.max_text_width = max_text_width
+
+            def wrap(self, availWidth, availHeight):
+                # Prevent ReportLab's "infinity" measurement from creating a 72000-point wide string
+                safe_text_width = min(availHeight, self.max_text_width)
+                
+                # Calculate paragraph bounds with the clamped width
+                w, h = self.paragraph.wrap(safe_text_width, availWidth)
+                
+                # Swap width and height for the rotation
+                self.width = h
+                self.height = w
+                
+                return self.width, self.height
+
+            def draw(self):
+                canv = self.canv
+                canv.saveState()
+                
+                if self.angle == 90:
+                    canv.translate(self.width, 0)
+                    canv.rotate(90)
+                elif self.angle == 270:
+                    canv.translate(0, self.height)
+                    canv.rotate(270)
+                    
+                self.paragraph.drawOn(canv, 0, 0)
+                canv.restoreState()
+                canv = self.canv
+                canv.saveState()
+                
+                if self.angle == 90:
+                    canv.translate(self.width, 0)
+                    canv.rotate(90)
+                elif self.angle == 270:
+                    canv.translate(0, self.height)
+                    canv.rotate(270)
+                    
+                self.paragraph.drawOn(canv, 0, 0)
+                canv.restoreState()
+
         title = Paragraph(score_name, ParagraphStyle('ScoreTitle', parent=styles['Heading2'], fontSize=16, leading=20, textColor=colors.Color(color[0]/255, color[1]/255, color[2]/255, alpha=color[3]/255), alignment=1, fontName = "Inter-Bold"))
-        description = Paragraph(score_desc, ParagraphStyle('ScoreDescription', parent=styles['Normal'], fontSize=12, leading=16, textColor=colors.Color(color[0]/255, color[1]/255, color[2]/255, alpha=color[3]/255), alignment=1, fontName = "Inter-Medium"))
+        title = RotatedParagraph(title, angle = 90)
 
-        data = [[image, [title, Spacer(1, 6), description], pie]]
+        data = [[[title], image, render_pie(score, color, resp), render_spider(resp, color)]]
 
-        col_widths = [150, 200, 175]
+        col_widths = [50, 100, 125, 175]
 
 
 
@@ -682,6 +744,67 @@ def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_
     )
     
     story = []
+
+    def render_spider(resp, color):
+        r, g, b = [x / 255.0 for x in color[:3]]
+        alpha = (color[3] / 255.0) if len(color) > 3 else 1.0
+
+        stroke = colors.Color(r, g, b, alpha=alpha)
+        fill = colors.Color(r, g, b, alpha = 0.5)
+
+        d = Drawing(200, 150)
+
+        pc = SpiderChart()
+        
+        pc.x = 50
+        pc.y = 25
+        pc.width = 100
+        pc.height = 100
+
+
+        pc.data = [
+            [x[1] for x in resp.values()]
+        ]
+
+        pc.labels = list(resp.keys())
+        pc.spokeLabels.fontSize = 7
+        pc.spokeLabels.fontName = "Inter-Medium"
+
+        if pc.data == [[]]:
+            pc.data = [[0]]
+
+        chart_x, chart_y = 50, 25
+        chart_w, chart_h = 100,100
+
+        cx = chart_x + (chart_w / 2)
+        cy = chart_y + (chart_h / 2)
+        max_radius = min(chart_w, chart_h) / 2
+
+        num_rings = 5
+        for i in range(1, num_rings + 1):
+            r = max_radius * (i / num_rings)
+            d.add(Circle(
+                cx, cy, r,
+                fillColor=None,
+                strokeColor=colors.HexColor("#E0E0E0"),
+                strokeWidth=1
+            ))
+
+        pc.strands.strokeColor = colors.HexColor("#CCCCCC")
+        pc.strands.strokeWidth = 1
+        pc.strands.strokeWidth = 1
+        pc.strands.strokeWidth = 1.5
+        pc.strands[0].strokeColor = stroke
+        pc.strands[0].fillColor = fill
+        for i in range(len(pc.labels)):
+            angle = math.pi/2 - 2 * math.pi * (i/len(pc.labels))
+            num_n = pc.labels[i].count("\n") + 1
+            pc.spokeLabels[i].dy = 15 * math.atan(num_n) ** 2 * math.sin(angle)
+            pc.spokeLabels[i].dx = 15 * math.atan(num_n) ** 2 * math.cos(angle)
+
+        d.add(pc)
+
+        return d
 
     def render_pie(score, color, resp):
         chart_drawing = Drawing(width=400, height=120)
@@ -722,9 +845,9 @@ def generate_pdf_report(h_resp, r_resp, n_resp, h_score, r_score, n_score, user_
         return chart_drawing
     
     story.append(Spacer(1, 75))
-    story.append(render_metric("human.png", (30, 75, 150, 255), h_score, h_resp, "HUMANNESS SCORE", "Measures how strongly a discovery or model is anchored in real human biology."))
-    story.append(render_metric("relevance.png", (80, 120, 60, 255), r_score, r_resp, "RELEVANCE SCORE", "Measures how closely a model connects to clinically meaningful disease states, outcomes, and treatment responses."))
-    story.append(render_metric("nam.png", (200, 150, 60, 255), n_score, n_resp, "NAM FIDELITY SCORE", "Measures how faithfully and reproducibly a NAM captures human disease biology in a scalable, fit-for-purpose manner."))
+    story.append(render_metric("human.png", (30, 75, 150, 255), h_score, h_resp, "HUMANNESS", "Measures how strongly a discovery or model is anchored in real human biology."))
+    story.append(render_metric("relevance.png", (80, 120, 60, 255), r_score, r_resp, "RELEVANCE", "Measures how closely a model connects to clinically meaningful disease states, outcomes, and treatment responses."))
+    story.append(render_metric("nam.png", (200, 150, 60, 255), n_score, n_resp, "NAM FIDELITY", "Measures how faithfully and reproducibly a NAM captures human disease biology in a scalable, fit-for-purpose manner."))
 
     story.append(PageBreak())
 
@@ -1045,15 +1168,20 @@ if st.query_params.get("page") != "calculator":
 expd, hum, rel, nam, pdf = st.tabs(["Experimental Design", "Humanness", "Relevance", "NAM Fidelity", "PDF Report"])
 
 with expd:
+    st.markdown("### Control & Experimental Conditions")
+    st.text_input(label = "Control group name", value = "Control", key = "control_name")
+    st.text_input(label = "Test group name", value = "Test", key = "test_name")
+    st.markdown("### Cohort Breakdown")
+    st.session_state.expd.columns = ["Cohort #", f"# {st.session_state.test_name} Samples", f"# {st.session_state.control_name} Samples", "Train/Test"]
     st.dataframe(st.session_state.expd)
 
     with st.container(border=True):
-        g1 = st.number_input("# Positive Samples", min_value = 0)
-        g2 = st.number_input("# Negative Samples", min_value = 0)
+        g1 = st.number_input(f"# {st.session_state.test_name} Samples", min_value = 0)
+        g2 = st.number_input(f"# {st.session_state.control_name} Samples", min_value = 0)
         t = st.selectbox(label="Train/Test", options = ["Train", "Test"])
         if st.button("+ Add Cohort", type = "primary"):
             expd = st.session_state.expd
-            st.session_state.expd.loc[len(expd)] = {"Cohort #": len(expd)+1, "# Positive Samples": g1, "# Negative Samples": g2, "Train/Test": t}
+            st.session_state.expd.loc[len(expd)] = {"Cohort #": len(expd)+1, f"# {st.session_state.test_name} Samples": g1, f"# {st.session_state.control_name} Samples": g2, "Train/Test": t}
 
             # cohort_numbers(st.session_state.expd)
             st.rerun()    
@@ -1061,28 +1189,28 @@ with expd:
 
 with hum:
     expd = st.session_state.expd
-    h_questions = Questionnaire([Question("Human Anchored", ["Was the original ML model built from human tissues or body fluids (blood, BAL, etc.)?"], [lambda **kw: st.selectbox(label = "", options = ("Yes", "No"), **kw)], lambda x: 5 if x[0] == "Yes" else 0, definitions=[Definition("BAL", "Bronchoalveolar lavage (BAL): Fluid collected from the lower airways during bronchoscopy. BAL contains immune cells, proteins, microbes, and soluble biomarkers that directly reflect lung biology.", "label", True)]),
+    h_questions = Questionnaire([Question("Human\nAnchored", ["Was the original ML model built from human tissues or body fluids (blood, BAL, etc.)?"], [lambda **kw: st.selectbox(label = "", options = ("Yes", "No"), **kw)], lambda x: 5 if x[0] == "Yes" else 0, definitions=[Definition("BAL", "Bronchoalveolar lavage (BAL): Fluid collected from the lower airways during bronchoscopy. BAL contains immune cells, proteins, microbes, and soluble biomarkers that directly reflect lung biology.", "label", True)]),
                    Question("Data Quality", ["What was the quality of the dataset(s) used to build the model?"], [lambda **kw: st.selectbox(label = "", options = ("High quality (Deep sequencing, > 50M reads/sample, validated platforms)", "Not high quality < 50M reads/sample or not validated"), **kw)], lambda x: 10 if "> 50M" in x[0] else (5 if "< 50M" in x[0] else 0)),
-                   Question("Cross Species Conservation", ["Is the entity conserved across species? (foundational biology but not a substitute for humanness)"], [lambda **kw: st.selectbox(label = "", options = ("Yes", "No"), **kw)], lambda x: 10 if x[0] == "Yes" else 0, definitions = [Definition("species", "Species: A biological organism (e.g., human, mouse, rat, non-human primate) used to generate or validate findings. Human-derived evidence contributes to Humanness; cross-species conservation provides supportive, but not primary, evidence.", "label", True)]),
-                   Question("ROC AUC", [f"AUC of Cohort #{x+1} ({expd.iloc[x]["Train/Test"]} n = {int(expd.loc[expd["Cohort #"] == x+1]["# Positive Samples"].iloc[0])+int(expd.loc[expd["Cohort #"] == x+1]["# Negative Samples"].iloc[0])})" for x in range(len(expd))], [lambda x=x, **kw: st.number_input(f"AUC of Cohort #{x+1} ({expd.iloc[x]["Train/Test"]} n = {int(expd.loc[expd["Cohort #"] == x+1]["# Positive Samples"].iloc[0])+int(expd.loc[expd["Cohort #"] == x+1]["# Negative Samples"].iloc[0])})", max_value= 1.0, format = "%.4f") for x in range(len(expd))], score_aucs)], 
+                   Question("Cross Species \nConservation", ["Is the entity conserved across species? (foundational biology but not a substitute for humanness)"], [lambda **kw: st.selectbox(label = "", options = ("Yes", "No"), **kw)], lambda x: 10 if x[0] == "Yes" else 0, definitions = [Definition("species", "Species: A biological organism (e.g., human, mouse, rat, non-human primate) used to generate or validate findings. Human-derived evidence contributes to Humanness; cross-species conservation provides supportive, but not primary, evidence.", "label", True)]),
+                   Question("ROC\nAUC", [f"AUC of Cohort #{x+1} ({expd.iloc[x]["Train/Test"]} n = {int(expd.loc[expd["Cohort #"] == x+1][f"# {st.session_state.test_name} Samples"].iloc[0])+int(expd.loc[expd["Cohort #"] == x+1][f"# {st.session_state.control_name} Samples"].iloc[0])})" for x in range(len(expd))], [lambda x=x, **kw: st.number_input(f"AUC of Cohort #{x+1} ({expd.iloc[x]["Train/Test"]} n = {int(expd.loc[expd["Cohort #"] == x+1][f"# {st.session_state.test_name} Samples"].iloc[0])+int(expd.loc[expd["Cohort #"] == x+1][f"# {st.session_state.control_name} Samples"].iloc[0])})", max_value= 1.0, format = "%.4f") for x in range(len(expd))], score_aucs)], 
                    
                    0)
 
 with rel:
     expd = st.session_state.expd
-    r_questions = Questionnaire([Question("Disease Severity", ["Was the model originally built or independently validated to classify disease severity, progression, therapeutic response, relapse, survival, or clinical outcomes?"], [lambda **kw: st.selectbox(label = "", options = ("Yes, prospectively validated", "Yes, retrospectively validated", "Exploratory association only", "No outcome association"), **kw)], score, definitions=[Definition("disease severity", "Disease severity: The extent or stage of illness (e.g., mild, moderate, severe, progressive, remission, relapse). Models linked to disease severity are expected to better capture clinically meaningful biology.", "label", True), Definition("clinical outcomes", "Clinical outcomes: Patient-centered endpoints such as disease-free, transplant-free or overall survival, disease progression (complications, by symptoms or radiologic or other clinically accepted scores), relapse, treatment response, symptom improvement, hospitalization or mortality in hospital, or adverse events that determine clinical benefit typically in Phase 3 trials looking for efficacy.", "label", True)]),
+    r_questions = Questionnaire([Question("Disease\nSeverity", ["Was the model originally built or independently validated to classify disease severity, progression, therapeutic response, relapse, survival, or clinical outcomes?"], [lambda **kw: st.selectbox(label = "", options = ("Yes, prospectively validated", "Yes, retrospectively validated", "Exploratory association only", "No outcome association"), **kw)], score, definitions=[Definition("disease severity", "Disease severity: The extent or stage of illness (e.g., mild, moderate, severe, progressive, remission, relapse). Models linked to disease severity are expected to better capture clinically meaningful biology.", "label", True), Definition("clinical outcomes", "Clinical outcomes: Patient-centered endpoints such as disease-free, transplant-free or overall survival, disease progression (complications, by symptoms or radiologic or other clinically accepted scores), relapse, treatment response, symptom improvement, hospitalization or mortality in hospital, or adverse events that determine clinical benefit typically in Phase 3 trials looking for efficacy.", "label", True)]),
                    Question("Prospective Cohorts", ["Were datasets prospectively collected with future outcomes annotated after tissue diversion?"], [lambda **kw: st.selectbox(label = "", options = (">5 cohorts","3-5 cohorts","1-2 cohorts","Retrospective only","No outcome-linked cohorts"), **kw)], score, definitions = [Definition("tissue diversion", "Tissue diversion: The time at which a human specimen is collected from clinical care or surgery for research. Prospective outcome studies link future clinical events to samples obtained at the time of tissue diversion.", "label", True)]),
-                   Question("GWAS Support", ["Is there additional support from GWAS and/or other biological support?"], [lambda **kw: st.selectbox(label = "", options = ("Yes", "No"), **kw)], lambda x: 25 if x[0] == "Yes" else 0, definitions=[Definition("GWAS", "Genome-Wide Association Study (GWAS): A study that identifies genetic variants associated with human traits or disease. Within TRUST-NAM, GWAS is one example of human biological support, alongside rare variants, eQTLs, CRISPR, drug-target evidence, and other causal data.", "label", True)])],
+                   Question("GWAS\nSupport", ["Is there additional support from GWAS and/or other biological support?"], [lambda **kw: st.selectbox(label = "", options = ("Yes", "No"), **kw)], lambda x: 25 if x[0] == "Yes" else 0, definitions=[Definition("GWAS", "Genome-Wide Association Study (GWAS): A study that identifies genetic variants associated with human traits or disease. Within TRUST-NAM, GWAS is one example of human biological support, alongside rare variants, eQTLs, CRISPR, drug-target evidence, and other causal data.", "label", True)])],
                    
                    1)
 
 with nam:
     expd = st.session_state.expd
     n_questions = Questionnaire([Question("Signature Capture (AUC)", ["What is the AUC ROC in healthy vs disease classification?"], [lambda **kw: st.number_input(label = "", min_value = 0.0, max_value = 1.0, format = "%.4f", **kw)], lambda x: 20 if x[0] >= 0.85 else (10 if x[0] >= 0.7 else 0)),
-                                 Question("Perturbation Alignment (multi-omic + phenotype)", ["Alignment of perturbation response between the NAM and human disease biology (multi-omic + phenotype)"], [lambda **kw: st.selectbox(label = "", options = ("> 3 independent readout types", "1-3 independent readout types", "Not applicable"), **kw)], score, definitions = [Definition("perturbation", "Perturbation: An intentional experimental intervention (drug, gene editing, cytokine, infection, environmental stimulus, etc.) used to test whether a NAM responds as predicted from human biology.", "label", True)]),
-                                 Question("Outcome Prediction (prospective human cohort)", ["What is the AUC of post-perturbation signature prediction of prospective human outcomes?"], [lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw)], lambda x: 20 if x[0] >= 0.85 else (10 if x[0] >= 0.7 else 0), definitions = [Definition("perturbation", "Perturbation: An intentional experimental intervention (drug, gene editing, cytokine, infection, environmental stimulus, etc.) used to test whether a NAM responds as predicted from human biology.", "label", True)]),
-                                 Question("Animal Model Corroboration", ["Signature capture of human disease biology in animal models (AUC)", "Predicts functional/phenotypic outcomes post-perturbation in prospective cohorts (AUC)", "Post-perturbation signature matches model signature (correlation)", "Post-perturbation signature predicts outcomes in human cohorts (AUC)"], [lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw), lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw), lambda **kw: st.number_input(label = "", min_value=-1.0, max_value=1.0, format="%.4f", **kw), lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw)], lambda x: 10 if (y := int(x[0] >=0.75) + int(x[1] >= 0.6) + int(x[2] >= 0.7) + int(x[3] >= 0.6)) == 4 else (5 if y == 3 else (5 if y == 2 else (0 if y == 1 else 0))), definitions = [Definition("perturbation", "Perturbation: An intentional experimental intervention (drug, gene editing, cytokine, infection, environmental stimulus, etc.) used to test whether a NAM responds as predicted from human biology.", "label", True)]),
-                                 Question("Reproducibility/Adoption Modifier", ["Simplicity - Minimal components; easy to implement; low technical complexity", "Scalability - High-throughput; cost-effective; readily accessible", "Least Perturbed Design - Physiologically relevant; minimal exogenous manipulation", "Defined Context of Use - Clear indications, limitations, and intended use", "Standardized SOPs - SOPs available, validated, and widely adopted", "Biological & Technical replicates - Adequate biological replicates (unique donors); technical replicates; statistically powered", "Fit-for-Purpose Benchmarking - Benchmarked against appropriate state-of-the-art standards"], [lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw)], score_reproducibility)
+                                 Question("Perturbation\nAlignment", ["Alignment of perturbation response between the NAM and human disease biology (multi-omic + phenotype)"], [lambda **kw: st.selectbox(label = "", options = ("> 3 independent readout types", "1-3 independent readout types", "Not applicable"), **kw)], score, definitions = [Definition("perturbation", "Perturbation: An intentional experimental intervention (drug, gene editing, cytokine, infection, environmental stimulus, etc.) used to test whether a NAM responds as predicted from human biology.", "label", True)]),
+                                 Question("Outcome\nPrediction", ["What is the AUC of post-perturbation signature prediction of prospective human outcomes?"], [lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw)], lambda x: 20 if x[0] >= 0.85 else (10 if x[0] >= 0.7 else 0), definitions = [Definition("perturbation", "Perturbation: An intentional experimental intervention (drug, gene editing, cytokine, infection, environmental stimulus, etc.) used to test whether a NAM responds as predicted from human biology.", "label", True)]),
+                                 Question("Animal Model\nCorroboration", ["Signature capture of human disease biology in animal models (AUC)", "Predicts functional/phenotypic outcomes post-perturbation in prospective cohorts (AUC)", "Post-perturbation signature matches model signature (correlation)", "Post-perturbation signature predicts outcomes in human cohorts (AUC)"], [lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw), lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw), lambda **kw: st.number_input(label = "", min_value=-1.0, max_value=1.0, format="%.4f", **kw), lambda **kw: st.number_input(label = "", min_value=0.0, max_value=1.0, format="%.4f", **kw)], lambda x: 10 if (y := int(x[0] >=0.75) + int(x[1] >= 0.6) + int(x[2] >= 0.7) + int(x[3] >= 0.6)) == 4 else (5 if y == 3 else (5 if y == 2 else (0 if y == 1 else 0))), definitions = [Definition("perturbation", "Perturbation: An intentional experimental intervention (drug, gene editing, cytokine, infection, environmental stimulus, etc.) used to test whether a NAM responds as predicted from human biology.", "label", True)]),
+                                 Question("Reproducibility/\nAdoption", ["Simplicity - Minimal components; easy to implement; low technical complexity", "Scalability - High-throughput; cost-effective; readily accessible", "Least Perturbed Design - Physiologically relevant; minimal exogenous manipulation", "Defined Context of Use - Clear indications, limitations, and intended use", "Standardized SOPs - SOPs available, validated, and widely adopted", "Biological & Technical replicates - Adequate biological replicates (unique donors); technical replicates; statistically powered", "Fit-for-Purpose Benchmarking - Benchmarked against appropriate state-of-the-art standards"], [lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw),lambda **kw: st.toggle(label = "", **kw)], score_reproducibility)
                                  ],
                                 
                                 2)
@@ -1090,7 +1218,6 @@ with nam:
 with pdf:
     user_id, submission_saved = get_user_id()
 
-    print(st.session_state.responses[2])
 
     pdf_bytes = generate_pdf_report(
         st.session_state.responses[0],
